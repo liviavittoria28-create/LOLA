@@ -1,0 +1,12 @@
+node_modules/
+data/
+.env
+.claude/
+*.db
+*.db-wal
+*.db-shm
+*.mp4
+*.zip
+
+# o vídeo de demonstração do site precisa ir para o GitHub/hospedagem
+!public/site/*.mp4

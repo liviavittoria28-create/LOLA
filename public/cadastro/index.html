@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Teste grátis · Lola</title>
+  <meta name="description" content="Crie sua conta Lola e use grátis por 15 dias, sem cartão de crédito." />
+  <meta name="theme-color" content="#fcf7f6" />
+  <meta property="og:title" content="Teste grátis · Lola" />
+  <meta property="og:description" content="Crie sua conta Lola e use grátis por 15 dias, sem cartão de crédito." />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="/site/img/og.jpg" />
+  <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="preload" href="/fonts/bodoni-moda-latin-standard-normal.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="/css/fonts.css" />
+  <link rel="stylesheet" href="/css/site.css" />
+  <meta name="robots" content="noindex" />
+</head>
+<body>
+<header class="hdr">
+  <div class="wrap">
+    <a class="wordmark" href="/" aria-label="Lola — página inicial">Lola<i></i></a>
+    <nav aria-label="Menu principal">
+      <a href="/#inicio">Início</a><a href="/#funcionalidades">Funcionalidades</a><a href="/#planos">Planos</a><a href="/#demonstracao">Demonstração</a><a href="/#contato">Contato</a>
+      <a class="m-only btn btn--rose" href="/cadastro/">Quero experimentar grátis</a>
+      <a class="m-only btn btn--line" href="/entrar/" style="margin-top:10px">Entrar</a>
+    </nav>
+    <div class="hdr__cta"><a class="login" href="/entrar/">Entrar</a><a class="btn btn--rose btn--sm" href="/cadastro/">Testar grátis</a></div>
+    <button class="menu-btn" aria-label="Abrir menu" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+  </div>
+</header>
+<main class="auth">
+  <aside class="auth__side"><h2>15 dias para conhecer tudo, sem compromisso.</h2><ul><li>Sem cartão de crédito</li><li>Agenda, clientes, anamnese e financeiro</li><li>Confirmação pelo WhatsApp</li><li>Depois, R$ 49,90 por mês — só se você quiser</li></ul><p style="margin-top:28px"><a class="btn btn--wa btn--sm" href="https://wa.me/5511962822060?text=Ol%C3%A1%21%20Tenho%20d%C3%BAvidas%20sobre%20a%20Lola." target="_blank" rel="noopener"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20l1.3-4A8 8 0 1 1 8 18.8L4 20Z"/><path d="M9 9.5c0 3 2.5 5.5 5.5 5.5l1-1.5-2-1-1 .8a3.5 3.5 0 0 1-1.8-1.8l.8-1-1-2L9 9.5Z"/></svg>Precisa de ajuda? Fale conosco</a></p></aside>
+  <div class="auth__main">
+<form class="form" id="signup" novalidate>
+  <h1>Comece seu teste grátis</h1>
+  <p>Leva um minuto. Sem cartão de crédito.</p>
+  <label class="f"><span>Nome do seu espaço</span><input name="company" required autocomplete="organization" placeholder="Ex.: Studio Bella"></label>
+  <div class="f2">
+    <label class="f"><span>Seu nome</span><input name="name" required autocomplete="name"></label>
+    <label class="f"><span>WhatsApp</span><input name="phone" type="tel" inputmode="tel" required autocomplete="tel" placeholder="(11) 99999-0000"></label>
+  </div>
+  <div class="f2">
+    <label class="f"><span>Cidade</span><input name="city" autocomplete="address-level2"></label>
+    <label class="f"><span>Tipo de negócio</span><select name="segment"><option>Salão de beleza</option><option>Clínica de estética</option><option>Manicure e pedicure</option><option>Cabeleireira</option><option>Cílios e sobrancelhas</option><option>Outro</option></select></label>
+  </div>
+  <label class="f"><span>E-mail</span><input name="email" type="email" required autocomplete="email" inputmode="email"></label>
+  <label class="f"><span>Crie uma senha</span><input name="password" type="password" required minlength="8" autocomplete="new-password"><small>Pelo menos 8 caracteres.</small></label>
+  <label class="chk"><input type="checkbox" name="accept_terms" value="1"><span>Li e aceito os <a href="/termos/" target="_blank">Termos de Uso</a> e a <a href="/privacidade/" target="_blank">Política de Privacidade</a>.</span></label>
+  <p class="err" role="alert"></p>
+  <button class="btn btn--rose" type="submit">Criar minha conta grátis</button>
+  <p class="form__alt">Já tem conta? <a href="/entrar/">Entrar</a> · <a href="https://wa.me/5511962822060?text=Ol%C3%A1%21%20Tenho%20d%C3%BAvidas%20sobre%20a%20Lola." target="_blank" rel="noopener">Dúvidas no WhatsApp</a></p>
+</form></div>
+</main>
+<script src="/site/site.js" defer></script>
+</body>
+</html>

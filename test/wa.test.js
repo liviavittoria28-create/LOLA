@@ -1,0 +1,219 @@
+// Testes do robô de confirmação do WhatsApp (sem conexão real: usa um WhatsApp simulado)
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ae-wa-'));
+process.env.WA_NO_DELAY = '1';
+process.env.PGLITE_MEMORY = '1'; // banco Postgres em memória só para o teste
+delete process.env.DATABASE_URL;
+const L = await import('../server/wa-logic.js');
+const { db, nowIso, getSettings, setSetting, initDb } = await import('../server/db.js');
+const { createCompany } = await import('../server/saas.js');
+const W = await import('../server/whatsapp.js');
+const { todayBR, addDays } = await import('../server/time.js');
+
+// ------------------------------------------------------------------ Funções puras
+test('entende as respostas da cliente', () => {
+  for (const t of ['1', ' 1 ', 'Confirmo meu horário', 'confirmo', 'Sim!', 'ok', 'Confirmado 👍', 'pode confirmar', 'vou sim', 'Estarei aí', 'SIM, CONFIRMO']) assert.equal(L.parseReply(t), 'confirm', t);
+  for (const t of ['2', 'Preciso remarcar', 'quero reagendar', 'Não vou poder', 'não posso', 'nao consigo ir', 'cancelar', 'sim, mas preciso remarcar', 'não confirmo', 'tem outro horário?']) assert.equal(L.parseReply(t), 'reschedule', t);
+  for (const t of ['', 'Oi', 'Qual o endereço?', 'Bom dia, tudo bem?', '🤍', 'dia 12 às 14h']) assert.equal(L.parseReply(t), null, t);
+});
+
+test('números de telefone: DDI e o "9" extra do celular', () => {
+  assert.equal(L.fullNumber('(11) 99999-0000'), '5511999990000');
+  assert.equal(L.fullNumber('+55 11 99999-0000'), '5511999990000');
+  assert.equal(L.phoneKey('(11) 99999-0000'), L.phoneKey('551199990000'), 'com e sem o 9 são a mesma cliente');
+  assert.notEqual(L.phoneKey('(11) 99999-0000'), L.phoneKey('(21) 99999-0000'), 'DDD diferente');
+  assert.equal(L.jidNumber('5511999990000@s.whatsapp.net'), '5511999990000');
+  assert.equal(L.jidNumber('5511999990000:12@s.whatsapp.net'), '5511999990000');
+  assert.equal(L.jidNumber('123456@lid'), null);
+});
+
+test('mensagem completa = modelo preenchido + instruções de resposta', () => {
+  const a = { client_name: 'Ana Paula', date: '2026-11-05', start: '11:00', end: '13:00', total_cents: 17000, procedures: [{ name: 'Extensão de cílios' }] };
+  const msg = L.confirmationMessage({ whatsapp_template: 'Oi [nome], dia [data] às [horário].', wa_footer: '*1* confirmo\n*2* remarcar' }, a);
+  assert.equal(msg, 'Oi Ana, dia 05/11/2026 (quinta-feira) às 11:00.\n\n*1* confirmo\n*2* remarcar');
+  assert.equal(L.confirmationMessage({ whatsapp_template: 'Oi [nome]', wa_footer: '' }, a), 'Oi Ana');
+});
+
+test('quando enviar: horário, "no dia" x "na véspera", status e atendimentos recentes', () => {
+  const today = '2026-11-05';
+  const old = '2026-11-01T10:00:00Z';
+  const appts = [
+    { id: 1, date: today, start: '15:00', status: 'agendada', created_at: old },
+    { id: 2, date: today, start: '09:00', status: 'agendada', created_at: old }, // já passou às 10h
+    { id: 3, date: today, start: '16:00', status: 'confirmada', created_at: old },
+    { id: 4, date: today, start: '17:00', status: 'agendada', created_at: old }, // já enviado
+    { id: 5, date: today, start: '18:00', status: 'agendada', created_at: '2026-11-05T12:30:00Z' }, // marcado agora
+    { id: 6, date: '2026-11-06', start: '10:00', status: 'agendada', created_at: old },
+  ];
+  const base = { today, nowMin: 600, nowIso: '2026-11-05T13:00:00Z', appointments: appts, sentIds: new Set([4]) };
+  const on = { wa_auto: '1', wa_mode: 'same_day', wa_time: '08:00' };
+  assert.deepEqual(L.dueAppointments({ ...base, settings: on }).map((a) => a.id), [1]);
+  assert.deepEqual(L.dueAppointments({ ...base, settings: { ...on, wa_auto: '0' } }), [], 'desligado');
+  assert.deepEqual(L.dueAppointments({ ...base, settings: { ...on, wa_time: '11:00' } }), [], 'antes do horário');
+  assert.deepEqual(L.dueAppointments({ ...base, settings: { ...on, wa_mode: 'day_before' } }).map((a) => a.id), [6], 'véspera');
+  assert.equal(L.targetDate({ wa_mode: 'day_before' }, '2026-12-31'), '2027-01-01');
+});
+
+// ------------------------------------------------------------------ Envio e chatbot (WhatsApp simulado)
+const sent = [];
+const fakeSock = {
+  onWhatsApp: async (n) => [{ exists: !n.endsWith('0001'), jid: `${n.slice(0, 4)}${n.slice(5)}@s.whatsapp.net` }], // WhatsApp sem o 9
+  presenceSubscribe: async () => {},
+  sendPresenceUpdate: async () => {},
+  sendMessage: async (jid, m) => { sent.push({ jid, text: m.text }); return { key: { remoteJid: jid } }; },
+};
+let ids = {};
+let CID, CID2;
+const today = todayBR();
+const tomorrow = addDays(today, 1);
+
+after(async () => {
+  try { await db.close(); } catch {}
+  fs.rmSync(process.env.DATA_DIR, { recursive: true, force: true });
+});
+const one = (sql, ...p) => db.prepare(sql).get(...p);
+
+before(async () => {
+  await initDb();
+  // empresa do estúdio original (mesmas mensagens de antes) e uma segunda empresa, para conferir o isolamento
+  CID = (await createCompany({ company: 'Esther Lino Bio Estética', owner_name: 'Esther', email: 'esther@wa.test', password: 'SenhaTeste123' }, { legacy: true, status: 'active' })).company_id;
+  CID2 = (await createCompany({ company: 'Outro Salão', owner_name: 'Outra', email: 'outra@wa.test', password: 'SenhaTeste123' })).company_id;
+  const t = nowIso();
+  const old = new Date(Date.now() - 864e5).toISOString();
+  const client = async (n, p, co = CID) => (await db.prepare('INSERT INTO clients (company_id, name, phone, phone_digits, created_at, updated_at) VALUES (?,?,?,?,?,?)').run(co, n, p, p.replace(/\D/g, ''), t, t)).lastInsertRowid;
+  const appt = async (cid, date, start, status = 'agendada', co = CID) => {
+    const id = (await db.prepare(`INSERT INTO appointments (company_id, client_id, date, start_at, end_at, status, total_cents, duration_min, created_at, updated_at) VALUES (?,?,?,?,?,?,18000,60,?,?)`)
+      .run(co, cid, date, `${date}T${start}:00-03:00`, `${date}T${start}:00-03:00`, status, old, old)).lastInsertRowid;
+    await db.prepare("INSERT INTO appointment_procedures (appointment_id, procedure_id, name, price_cents, duration_min) VALUES (?,7,'Lash lifting',18000,60)").run(id);
+    return id;
+  };
+  ids.ana = await client('Ana Paula Souza', '(11) 99999-0000');
+  ids.bia = await client('Beatriz Lopes', '(11) 95555-4444');
+  ids.semZap = await client('Sem WhatsApp', '(11) 90000-0001');
+  ids.a1 = await appt(ids.ana, tomorrow, '10:00');
+  ids.a2 = await appt(ids.bia, tomorrow, '14:00');
+  ids.a3 = await appt(ids.semZap, tomorrow, '16:00');
+  ids.a4 = await appt(ids.bia, tomorrow, '18:00', 'cancelada');
+  // mesma cliente (mesmo telefone) cadastrada também na outra empresa
+  ids.anaOutra = await client('Ana na outra empresa', '(11) 99999-0000', CID2);
+  ids.outra = await appt(ids.anaOutra, tomorrow, '11:00', 'agendada', CID2);
+  W._test.setSock(CID, fakeSock);
+  W._test.conn(CID).st.status = 'connected';
+});
+
+test('envia a confirmação com a mensagem da Esther e registra', async () => {
+  await W.sendConfirmation(CID, ids.a1);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].jid, '551199990000@s.whatsapp.net');
+  assert.match(sent[0].text, /^Olá! Tudo bem\? 🤍/);
+  assert.match(sent[0].text, /agendado para o dia \d{2}\/\d{2}\/\d{4} \(.+\), às 10:00/);
+  assert.match(sent[0].text, /Rua Aiapaina, 3A/);
+  assert.match(sent[0].text, /\*1\* – Confirmo meu horário/);
+  assert.equal((await one('SELECT * FROM wa_messages WHERE appointment_id = ?', ids.a1)).status, 'sent');
+});
+
+test('número sem WhatsApp fica registrado como falha', async () => {
+  await assert.rejects(W.sendConfirmation(CID, ids.a3), /não tem WhatsApp/);
+  assert.equal((await one('SELECT status FROM wa_messages WHERE appointment_id = ?', ids.a3)).status, 'failed');
+});
+
+test('não envia para atendimento cancelado', async () => {
+  await assert.rejects(W.sendConfirmation(CID, ids.a4), /não precisa/);
+});
+
+test('cliente responde "1": atendimento vira Confirmada e o robô agradece', async () => {
+  sent.length = 0;
+  await W._test.handleIncoming(CID, { key: { remoteJid: '551199990000@s.whatsapp.net' }, message: { conversation: '1' } });
+  assert.equal((await one('SELECT status FROM appointments WHERE id = ?', ids.a1)).status, 'confirmada');
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /^Perfeito, Ana! Seu horário de .+ às 10:00 está confirmado/);
+  const w = await one('SELECT reply, reply_text FROM wa_messages WHERE appointment_id = ?', ids.a1);
+  assert.deepEqual({ ...w }, { reply: 'confirm', reply_text: '1' });
+});
+
+test('depois de respondida, o robô fica em silêncio (a conversa é da Esther)', async () => {
+  sent.length = 0;
+  await W._test.handleIncoming(CID, { key: { remoteJid: '551199990000@s.whatsapp.net' }, message: { conversation: 'sim, obrigada!' } });
+  assert.equal(sent.length, 0);
+});
+
+test('resposta pelo identificador novo do WhatsApp (LID) com o número alternativo', async () => {
+  await W.sendConfirmation(CID, ids.a2);
+  sent.length = 0;
+  await W._test.handleIncoming(CID, { key: { remoteJid: '98765432@lid', remoteJidAlt: '5511955554444@s.whatsapp.net' }, message: { extendedTextMessage: { text: 'Preciso remarcar 😕' } } });
+  assert.equal((await one('SELECT status FROM appointments WHERE id = ?', ids.a2)).status, 'agendada', 'não muda sozinho');
+  assert.equal((await one('SELECT reply FROM wa_messages WHERE appointment_id = ?', ids.a2)).reply, 'reschedule');
+  assert.equal(sent[0].jid, '98765432@lid', 'responde na mesma conversa');
+  assert.match(sent[0].text, /Sem problemas, Beatriz!/);
+});
+
+test('ignora grupos, mensagens próprias, desconhecidos e textos que não entende', async () => {
+  sent.length = 0;
+  await W._test.handleIncoming(CID, { key: { remoteJid: '123@g.us', participant: '5511999990000@s.whatsapp.net' }, message: { conversation: '1' } });
+  await W._test.handleIncoming(CID, { key: { remoteJid: '5511999990000@s.whatsapp.net', fromMe: true }, message: { conversation: '1' } });
+  await W._test.handleIncoming(CID, { key: { remoteJid: '5521988887777@s.whatsapp.net' }, message: { conversation: '1' } });
+  await W._test.handleIncoming(CID, { key: { remoteJid: '5511955554444@s.whatsapp.net' }, message: { conversation: 'Qual o endereço?' } });
+  assert.equal(sent.length, 0);
+});
+
+test('envio automático: respeita liga/desliga e não envia duas vezes', async () => {
+  const set = (k, v) => setSetting(CID, k, v);
+  const cid = (await one('SELECT id FROM clients WHERE name = ?', 'Ana Paula Souza')).id;
+  const old = new Date(Date.now() - 864e5).toISOString();
+  const id = (await db.prepare(`INSERT INTO appointments (company_id, client_id, date, start_at, end_at, status, total_cents, duration_min, created_at, updated_at) VALUES (?,?,?,?,?,'agendada',5000,30,?,?)`)
+    .run(CID, cid, tomorrow, `${tomorrow}T19:00:00-03:00`, `${tomorrow}T19:30:00-03:00`, old, old)).lastInsertRowid;
+  await set('wa_mode', 'day_before');
+  await set('wa_time', '00:00');
+  sent.length = 0;
+  await set('wa_auto', '0');
+  await W.runScheduler(CID);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(sent.length, 0, 'desligado não envia');
+  await set('wa_auto', '1');
+  await W.runScheduler(CID);
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(sent.length, 1, 'só o novo atendimento (os outros já foram enviados ou falharam)');
+  assert.match(sent[0].text, /às 19:00/);
+  await W.runScheduler(CID);
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(sent.length, 1, 'não reenvia');
+  assert.equal((await getSettings(CID)).wa_auto, '1');
+  assert.ok(id);
+});
+
+test('sessão do WhatsApp fica guardada no banco (sobrevive a reinícios)', async () => {
+  const B = await import('@whiskeysockets/baileys');
+  const a = await W._test.useDbAuthState(B, CID);
+  a.state.creds.me = { id: '5511999990000:1@s.whatsapp.net', name: 'Studio' };
+  await a.saveCreds();
+  await a.state.keys.set({ 'pre-key': { 1: { public: Buffer.from([1, 2, 3]), private: Buffer.from([4, 5]) } }, session: { abc: Buffer.from('xyz') } });
+  // "reinício": lê tudo de novo do banco
+  const b = await W._test.useDbAuthState(B, CID);
+  assert.equal(b.state.creds.me.id, '5511999990000:1@s.whatsapp.net');
+  assert.ok(Buffer.isBuffer(b.state.creds.noiseKey.private), 'chaves continuam binárias');
+  assert.ok(b.state.creds.noiseKey.private.equals(a.state.creds.noiseKey.private));
+  const k = await b.state.keys.get('pre-key', ['1', '2']);
+  assert.deepEqual([...k['1'].public], [1, 2, 3]);
+  assert.equal(k['2'], null);
+  await b.state.keys.set({ 'pre-key': { 1: null } });
+  assert.equal((await b.state.keys.get('pre-key', ['1']))['1'], null, 'apaga chave removida');
+});
+
+test('Lola: o robô de uma empresa não envia nem responde por outra', async () => {
+  // a outra empresa não está conectada: não envia
+  await assert.rejects(W.sendConfirmation(CID2, ids.outra), /não está conectado/);
+  // a empresa conectada não consegue usar um atendimento da outra
+  await assert.rejects(W.sendConfirmation(CID, ids.outra), /não encontrado/);
+  // ajustes e sessão do WhatsApp separados por empresa
+  assert.match((await getSettings(CID)).whatsapp_template, /Rua Aiapaina/);
+  assert.doesNotMatch((await getSettings(CID2)).whatsapp_template, /Rua Aiapaina/);
+  const B = await import('@whiskeysockets/baileys');
+  const other = await W._test.useDbAuthState(B, CID2);
+  assert.equal(other.state.creds.me, undefined, 'sessão de outra empresa não vaza');
+  assert.equal(W.waState(CID2).status, 'disconnected');
+});

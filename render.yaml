@@ -1,0 +1,31 @@
+# Render Blueprint — Lola (banco de dados no Supabase)
+# Em render.com: New + → Blueprint → escolha este repositório do GitHub.
+services:
+  - type: web
+    name: lola
+    runtime: node
+    region: virginia            # mais próxima do Brasil entre as regiões do Render
+    plan: free                  # os dados ficam no Supabase; para vender, prefira um plano pago (não "dorme")
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true            # publica sozinho a cada push no GitHub
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: NODE_ENV
+        value: production
+      - key: PLATFORM_EMAIL     # seu acesso ao painel do proprietário (/admin)
+        sync: false
+      - key: PLATFORM_PASSWORD
+        sync: false
+      - key: ADMIN_NAME
+        value: Esther Lino
+      - key: ADMIN_EMAIL        # acesso da empresa nº 1 (estúdio original); pode deixar em branco numa instalação nova
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: DATABASE_URL       # connection string do Supabase (Session pooler)
+        sync: false
+      - key: PUBLIC_URL         # ex.: https://lola.onrender.com ou o seu domínio
+        sync: false
